@@ -1,0 +1,6 @@
+pandas==3.0.6
+numpy==2.4.4
+lightgbm==4.7.0
+scipy==1.17.1
+matplotlib==3.10.9
+joblib==1.5.3
