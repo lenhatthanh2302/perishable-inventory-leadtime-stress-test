@@ -247,6 +247,62 @@ def eda_figures(train, scope, picked):
     print(f"đã lưu 5 biểu đồ vào {OUT_DIR}")
 
 
+def driver_analysis(pn, oil):
+    """Tương quan hạng (Spearman) giữa độ lệch doanh số so với xu hướng và các yếu tố giải thích, theo family.
+    Cả hai vế đều loại xu hướng 28 ngày (trung bình trượt căn giữa); doanh số còn loại thêm hiệu ứng thứ trong tuần."""
+    banner("BƯỚC 3b: QUAN HỆ GIỮA DOANH SỐ VÀ CÁC YẾU TỐ GIẢI THÍCH")
+    cal, fam = pn["cal"], pn["fam_of"]
+    sdf = pd.DataFrame(pn["S"], index=cal)
+    trend = lambda x: x.rolling(28, center=True, min_periods=14).mean()
+    rel = sdf / trend(sdf)
+    rel = rel / rel.groupby(cal.dayofweek).transform("mean")
+    o = oil.set_index("date").dcoilwtico.reindex(cal).ffill().bfill()
+    drivers = ["Khuyến mãi (độ phủ)", "Lễ (theo địa phương)", "Sự kiện quốc gia", "Ngày lương (15, cuối tháng)", "Giá dầu"]
+    corr, rows = {}, []
+    for f in FAMILIES:
+        cols = np.where(fam == f)[0]
+        y = rel.iloc[:, cols].mean(axis=1)
+        x = pd.DataFrame({
+            "Khuyến mãi (độ phủ)": pd.Series((pn["LP"][:, cols] > 0).mean(axis=1), index=cal),
+            "Lễ (theo địa phương)": pd.Series(pn["H"][:, cols].mean(axis=1), index=cal),
+            "Sự kiện quốc gia": pd.Series(pn["EV"][:, 0], index=cal),
+            "Ngày lương (15, cuối tháng)": pd.Series(pn["PD"][:, 0], index=cal),
+            "Giá dầu": o})
+        x["Khuyến mãi (độ phủ)"] -= trend(x["Khuyến mãi (độ phủ)"])
+        x["Giá dầu"] = x["Giá dầu"] / trend(x["Giá dầu"]) - 1
+        corr[f] = {k: y.corr(x[k], method="spearman") for k in drivers}
+        r, p = rel.iloc[:, cols].to_numpy(), pn["LP"][:, cols] > 0
+        ok = ~np.isnan(r)
+        rows.append(dict(family=f, promo_day_share=p[ok].mean(), promo_lift=r[ok & p].mean() / r[ok & ~p].mean()))
+    C = pd.DataFrame(corr).T
+    print("Tương quan hạng Spearman giữa độ lệch doanh số (đã loại xu hướng và thứ trong tuần) và từng yếu tố:")
+    print(C.round(2).to_string())
+    C.to_csv(OUT_DIR / "eda_driver_correlation.csv")
+
+    fam_sales = sdf.T.groupby(fam).sum().T
+    yoy = fam_sales.loc[EVAL_START:].mean() / fam_sales.loc["2016-05-16":"2016-08-15"].mean() - 1
+    tab = pd.DataFrame(rows).set_index("family")
+    tab["yoy_growth_eval_window"] = yoy
+    tab = tab.loc[FAMILIES]
+    print("\nHiệu ứng khuyến mãi (doanh số tương đối ngày có khuyến mãi / ngày không, cùng chuỗi) và tăng trưởng so với "
+          "cùng kỳ 2016 (cửa sổ đánh giá):")
+    print(tab.round(3).to_string())
+    tab.to_csv(OUT_DIR / "eda_promo_lift_yoy.csv")
+
+    fig, ax = plt.subplots(figsize=(8, 3.6))
+    im = ax.imshow(C.to_numpy(float), cmap="RdBu_r", vmin=-0.5, vmax=0.5, aspect="auto")
+    ax.set_xticks(range(C.shape[1]), C.columns, fontsize=8, rotation=15)
+    ax.set_yticks(range(C.shape[0]), C.index, fontsize=8)
+    ax.grid(False)
+    for i in range(C.shape[0]):
+        for j in range(C.shape[1]):
+            ax.text(j, i, f"{C.iat[i, j]:.2f}", ha="center", va="center", fontsize=8)
+    fig.colorbar(im, ax=ax, label="Spearman")
+    ax.set_title("Tương quan giữa độ lệch doanh số và các yếu tố giải thích (đã loại xu hướng 28 ngày, thứ trong tuần)",
+                 fontsize=9)
+    save_fig("fig05b_driver_correlation")
+
+
 # ----------------------------------------------------------------------------
 # BƯỚC 4: BẢNG GIẢ ĐỊNH
 # ----------------------------------------------------------------------------
@@ -958,7 +1014,7 @@ def simulation_report(phys):
     print(tab_a.to_string())
     tab_a.to_csv(OUT_DIR / "sim_table_base_policies.csv")
 
-    sel = pol[(pol.mult == 1.0) & pol.policy.isin([P1, P2, P3, REF_ORACLE])]
+    sel = pol[(pol.mult == 1.0) & pol.policy.isin([P1, P2, P3, REF_MA28_CAL, REF_ORACLE])]
     tab_b = rates(sel, ["policy", "shock", "Lm"]).reset_index()
     tab_b.to_csv(OUT_DIR / "sim_table_policies_by_L_shock.csv", index=False)
     for col in ("cost_rate", "fill_rate", "waste_rate"):
@@ -1005,6 +1061,13 @@ def simulation_report(phys):
     tab_e.to_csv(OUT_DIR / "sim_table_sensitivity_margin_carry.csv", index=False)
     print(f"\nE. Độ nhạy theo biên lợi nhuận và chi phí giữ hàng (cost_rate, L={b['Lm']}, trễ={b['shock']}):")
     print(tab_e.round(3).to_string(index=False))
+
+    sel = pol[(pol.Lm == b["Lm"]) & (pol.shock == b["shock"])]
+    tab_h = rates(sel, ["policy", "mult"]).reset_index()
+    tab_h.to_csv(OUT_DIR / "sim_table_sensitivity_shelf_life.csv", index=False)
+    for col in ("cost_rate", "fill_rate", "waste_rate"):
+        print(f"\nH. {col} theo hệ số hạn sử dụng (L={b['Lm']}, trễ={b['shock']}):")
+        print(tab_h.pivot(index="policy", columns="mult", values=col).round(3).to_string())
     return pol, tab_b, fr, tab_c, wf
 
 
@@ -1171,7 +1234,8 @@ def simulation_figures(pol, tab_b, fr):
     ax.legend(fontsize=7)
     save_fig("fig11_cost_service_frontier")
 
-    names = {P1: ("tab:gray", "-"), P2: ("tab:blue", "-"), P3: ("tab:red", "-"), REF_ORACLE: ("tab:red", "--")}
+    names = {P1: ("tab:gray", "-"), P2: ("tab:blue", "-"), P3: ("tab:red", "-"), REF_MA28_CAL: ("tab:green", "-."),
+             REF_ORACLE: ("tab:red", "--")}
     fig, axes = plt.subplots(1, 3, figsize=(11, 3.6), sharey=True)
     for ax, sh in zip(axes, LEAD_TIME_SHOCK_PROB):
         for k, (c, ls) in names.items():
@@ -1186,8 +1250,8 @@ def simulation_figures(pol, tab_b, fr):
 def lever_figure(tab_c):
     levers = {"GBM": ("tab:blue", "Chỉ nâng tau"), "GBM+0.5": ("tab:green", "Phủ thêm nửa ngày cầu"),
               "GBM+1": ("tab:orange", "Phủ thêm 1 ngày cầu")}
-    targets = [0.90, 0.93]
-    fig, axes = plt.subplots(len(targets), 3, figsize=(11, 6), sharex=True, sharey="row")
+    targets = [0.90, 0.95]
+    fig, axes = plt.subplots(len(targets), 3, figsize=(11, 6.4), sharex=True, sharey="row")
     for i, tg in enumerate(targets):
         for j, sh in enumerate(LEAD_TIME_SHOCK_PROB):
             ax = axes[i, j]
@@ -1199,6 +1263,8 @@ def lever_figure(tab_c):
                 ax.set_xlabel("Lead time trung bình L (ngày)")
         axes[i, 0].set_ylabel("Chi phí / cầu (giá vốn = 1)")
     axes[0, 0].legend(fontsize=7)
+    fig.text(0.5, -0.01, "Điểm vắng của đường 'Chỉ nâng tau' nghĩa là nâng tau tới 0,95 vẫn không đạt fill rate mục tiêu.",
+             ha="center", fontsize=8)
     save_fig("fig14_shorten_vs_buffer")
 
 
@@ -1221,6 +1287,7 @@ def main():
     eda_figures(train, scope, picked)
     assumptions_report()
     pn, frames, preds, sig = forecasting(scope, stores, holidays, picked)
+    driver_analysis(pn, oil)
     phys = simulation(pn, frames, preds, sig)
     pol, tab_b, fr, tab_c, wf = simulation_report(phys)
     simulation_inference(pn, frames, preds, pol)
