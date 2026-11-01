@@ -833,7 +833,9 @@ def classical_levels(frames, pn, L):
     return np.clip(pt + roll.mean().to_numpy() + z * roll.std().to_numpy(), 0, None)
 
 
-def shock_delta(U, prob):
+def shock_delta(U, prob, late_only=False):
+    if late_only:                                   # bỏ nhánh "về sớm": chỉ giữ xác suất về trễ prob/2
+        return np.where(U > 1 - prob / 2, 1, 0)
     return np.where(U < prob / 2, -1, np.where(U > 1 - prob / 2, 1, 0))
 
 
@@ -841,7 +843,7 @@ def run_scenario(Lm, shock, mult, rep, ctx):
     pn, D, levels = ctx["pn"], ctx["D"], ctx["levels"]
     T, N, nt = pn["T"], pn["N"], len(TAUS)
     j0, e0 = ctx["j0"], ctx["e0"]
-    delta = shock_delta(ctx["U"][rep], LEAD_TIME_SHOCK_PROB[shock])
+    delta = shock_delta(ctx["U"][rep], LEAD_TIME_SHOCK_PROB[shock], ctx.get("late_only", False))
     K = shelf_days(mult)[[FAMILIES.index(f) for f in pn["fam_of"]]]
     days = np.arange(j0 + 1, T)
     wins = {"calib": (days >= j0 + 1 + CALIB_SKIP) & (days < e0), "eval": days >= e0}
@@ -984,7 +986,7 @@ def lever_comparison(tab_c):
     """Với mỗi (trễ, hạn sử dụng, L >= 2, fill mục tiêu): chi phí giữ nguyên L bằng đòn bẩy rẻ nhất
     (nâng tau hoặc đệm thêm nửa/1 ngày) so với chi phí khi rút ngắn L đi 1 ngày.
     Lưu ý: ở L=1 cú sốc "về sớm" bị chặn (hàng không thể về trước 1 ngày), nên bước L=2 -> L=1 bị phóng đại;
-    chạy thử cú sốc chỉ-về-trễ ở L=2 cho thấy chi phí giảm khoảng 2/3 mức chênh với L=1."""
+    kiểm tra chỉ-về-trễ (late_only_check) cho thấy mức chênh này giảm khoảng một nửa."""
     t = tab_c.pivot_table(index=["shock", "mult", "Lm", "fill_target"], columns="model", values="cost_rate",
                           dropna=False)
     t["cost_buffer"] = t[list(BUFFER_MODELS)].min(axis=1)                 # đòn bẩy đệm thời gian: lấy w rẻ nhất
@@ -998,6 +1000,28 @@ def lever_comparison(tab_c):
     t["gain_shorten_1day"] = t.cost_best_lever - t.cost_shorter_L
     t["gain_pct_of_cost"] = t.gain_shorten_1day / t.cost_best_lever
     return t.reset_index(drop=True)
+
+
+def late_only_check(pn, frames, preds):
+    """Kiểm tra bước L=2 -> L=1 bị phóng đại: chạy lại với cú sốc chỉ-về-trễ (xác suất về trễ giữ nguyên prob/2),
+    khi đó mọi L đều có cùng dạng phân phối trễ như L=1 và không còn khác biệt do chặn ở 1 ngày."""
+    banner("BƯỚC 6c: KIỂM TRA CHỈ-VỀ-TRỄ (loại hiệu ứng chặn ở 1 ngày)")
+    m0, c0 = GROSS_MARGIN["base"], CARRY_RATE_ANNUAL["base"]
+    ctx = build_context(pn, frames, preds)
+    ctx["late_only"] = True
+    jobs = [(Lm, sh, 1.0, r) for sh in ("moderate", "high") for r in range(SIM_REPS) for Lm in LEAD_TIME_MEAN]
+    phys = pd.concat(Parallel(n_jobs=N_JOBS, prefer="threads")(delayed(run_scenario)(*j, ctx) for j in jobs),
+                     ignore_index=True)
+    pol = policy_results(phys, m0, c0)
+    tab = rates(pol[pol.policy.isin([P1, P2, P3, REF_MA28_CAL])], ["policy", "shock", "Lm"]).reset_index()
+    tab.to_csv(OUT_DIR / "sim_table_late_only_policies.csv", index=False)
+    print("\ncost_rate theo L (chỉ-về-trễ, hạn sử dụng x1):")
+    print(tab.pivot(index=["policy", "shock"], columns="Lm", values="cost_rate").round(4).to_string())
+    tab_c = cost_to_reach_fill(service_frontier(phys, m0, c0), FILL_TARGETS)
+    tab_f = lever_comparison(tab_c)
+    tab_f.to_csv(OUT_DIR / "sim_table_late_only_levers.csv", index=False)
+    print("\nRút ngắn 1 ngày so với đòn bẩy rẻ nhất (chỉ-về-trễ):")
+    print(tab_f.drop(columns="mult").round(4).to_string(index=False))
 
 
 def simulation_report(phys):
@@ -1088,7 +1112,7 @@ def run_detail(Lm, shock, mult, rep, ctx, picks):
     pn, D, levels = ctx["pn"], ctx["D"], ctx["levels"]
     T, N = pn["T"], pn["N"]
     j0, e0 = ctx["j0"], ctx["e0"]
-    delta = shock_delta(ctx["U"][rep], LEAD_TIME_SHOCK_PROB[shock])
+    delta = shock_delta(ctx["U"][rep], LEAD_TIME_SHOCK_PROB[shock], ctx.get("late_only", False))
     K = shelf_days(mult)[[FAMILIES.index(f) for f in pn["fam_of"]]]
     starts = np.arange(0, T - e0, 7)[:N_BLOCKS]
     out = {}
@@ -1293,6 +1317,7 @@ def main():
     phys = simulation(pn, frames, preds, sig)
     pol, tab_b, fr, tab_c, wf = simulation_report(phys)
     simulation_inference(pn, frames, preds, pol)
+    late_only_check(pn, frames, preds)
     simulation_figures(pol, tab_b, fr)
     lever_figure(tab_c)
     waste_figure(wf)
