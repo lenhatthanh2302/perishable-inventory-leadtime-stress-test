@@ -1094,6 +1094,16 @@ def simulation_report(phys):
     for col in ("cost_rate", "fill_rate", "waste_rate"):
         print(f"\nH. {col} theo hệ số hạn sử dụng (L={b['Lm']}, trễ={b['shock']}):")
         print(tab_h.pivot(index="policy", columns="mult", values=col).round(3).to_string())
+
+    tb = pol[(pol.mult == 1.0) & (pol.window == "eval") & pol.policy.isin([P3, REF_MA28_CAL])]
+    tb = tb.groupby(["policy", "Lm", "shock", "rep", "family"]).tau.first().reset_index()
+    tb["tran_095"] = tb.tau >= max(TAUS) - 1e-9
+    tb["san_005"] = tb.tau <= min(TAUS) + 1e-9
+    tab_t = tb.groupby(["policy", "family"])[["tran_095", "san_005"]].mean().reset_index()
+    tab_t.to_csv(OUT_DIR / "sim_table_tau_at_boundary.csv", index=False)
+    print(f"\nI. Tỷ lệ lựa chọn tau nằm đúng ở trần {max(TAUS)} hoặc sàn {min(TAUS)} của lưới "
+          "(hạn sử dụng x1, mọi L, mọi cú sốc):")
+    print(tab_t.round(2).to_string(index=False))
     return pol, tab_b, fr, tab_c, wf
 
 
