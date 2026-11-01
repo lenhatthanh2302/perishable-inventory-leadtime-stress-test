@@ -36,8 +36,8 @@ START_DATE = "2015-06-01"          # trước 06/2015 PRODUCE gần như không 
 MAX_STORE_ZERO_DAYS = 10           # một cửa hàng được phép có tối đa ngần này ngày doanh số = 0 kể từ START_DATE
 MAX_SERIES_ZERO_SHARE = 0.10       # mọi family của cửa hàng được giữ phải có bán ở >= 90% số ngày mở cửa
 N_STORES = 12
-PERISHABLE_ALL = ["PRODUCE", "DAIRY", "MEATS", "POULTRY", "BREAD/BAKERY",
-                  "EGGS", "SEAFOOD", "PREPARED FOODS", "DELI"]
+# Sáu family có một nhóm thực phẩm đơn lẻ để đối chiếu hạn sử dụng (Food Keeper) và hao hụt (USDA ERS).
+# MEATS, DELI và PREPARED FOODS gồm nhiều mặt hàng khác nhau nên không có một hạn sử dụng đại diện, vì vậy không đưa vào.
 FAMILIES = ["PRODUCE", "BREAD/BAKERY", "POULTRY", "DAIRY", "EGGS", "SEAFOOD"]
 
 # Hạn sử dụng (ngày). Căn cứ: FMI & Cornell, "The Food Keeper" (thời gian bảo quản lạnh tại nhà),
@@ -180,9 +180,11 @@ def summarise_scope(scope):
         series=("store_nbr", "nunique"),
         mean_daily_sales=("sales", "mean"),
         zero_share=("sales", lambda s: (s == 0).mean()),
-        cv=("sales", lambda s: s.std() / s.mean()),
         promo_share=("onpromotion", lambda s: (s > 0).mean()),
-    ).round(3)
+    )
+    # CV tính trong từng chuỗi (cửa hàng x family) rồi lấy trung bình, cùng định nghĩa với fig05; không gộp các cửa hàng
+    g["cv"] = scope.groupby(["family", "store_nbr"]).sales.agg(lambda s: s.std() / s.mean()).groupby("family").mean()
+    g = g[["series", "mean_daily_sales", "zero_share", "cv", "promo_share"]].round(3)
     print(g.to_string())
     frac = (scope.groupby("family").sales.apply(lambda s: (s % 1 != 0).mean())).round(3)
     print("\ntỷ lệ doanh số không nguyên (bán theo cân, kg):", frac.to_dict())
