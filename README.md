@@ -1,4 +1,4 @@
-# Dự báo phân vị và chính sách tồn kho nhạy với lead time cho hàng tươi sống: bằng chứng từ Favorita
+# Dự báo phân vị và chính sách tồn kho nhạy với lead time cho hàng tươi sống
 
 Mã nguồn của tiểu luận cuối kỳ môn *Các mô hình dự báo trong kinh doanh* (Đại học Kinh tế - Luật, ĐHQG-HCM).
 
